@@ -3,12 +3,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 
 #define LINE_MAXCHARS 1024
 #define MAX_ARGS 16
 #define ARG_MAXCHAR 128
 
 #define STRING_CHAR_INDEX(s, c) (strchr(s, c) == NULL ? -1 : (int)(strchr(s, c) - s))
+
+typedef enum RedirectionType {
+	REDIR_NONE,
+	REDIR_OUTPUT,
+	REDIR_APPEND,
+	REDIR_INPUT,
+
+	REDIR_ERROR, // if the user tries to use more than one redirection
+} RedirectionType;
 
 int main() {
 	// the line the user inputs
@@ -37,15 +47,53 @@ int main() {
 		char args[MAX_ARGS][ARG_MAXCHAR] = { 0 };
 
 		int argCount = 0;
+		RedirectionType redir = REDIR_NONE;
+		int redirArgIndex = 0;
 		char * lineSub = line;
 		while((int)(lineSub - line) < lineLen && argCount < MAX_ARGS) {
 			int argEnd;
-			if(lineSub[0] == '\"') {
+			bool quote = false;
+			if(lineSub[0] == 0){
+				break;
+			}
+			if(lineSub[0] == '<') {
+				if(redir != REDIR_NONE) {
+					redir = REDIR_ERROR;
+					break; // can't have multiple redirections
+				}
+				argEnd = 1;
+				redir = REDIR_INPUT;
+				redirArgIndex = argCount + 1; // next argument is redirection location
+			}
+			else if(lineSub[0] == '>') {
+				if(redir != REDIR_NONE) {
+					redir = REDIR_ERROR;
+					break; // can't have multiple redirections
+				}
+				// >>
+				if((int)(lineSub - line) < lineLen-1 && lineSub[1] == '>') {
+					argEnd = 2;
+					redir = REDIR_APPEND;
+					redirArgIndex = argCount + 1; // next argument is redirection location
+				}
+				else {
+					argEnd = 1;
+					redir = REDIR_OUTPUT;
+					redirArgIndex = argCount + 1; // next argument is redirection location
+				}
+			}
+			else if(lineSub[0] == '\"') {
 				lineSub ++; // don't include starting quote
 				argEnd = STRING_CHAR_INDEX(lineSub, '\"');
+				quote = true;
+			}
+			else if(lineSub[0] == '\'') {
+				lineSub ++; // don't include starting quote
+				argEnd = STRING_CHAR_INDEX(lineSub, '\'');
+				quote = true;
 			}
 			else
-				argEnd = strcspn(lineSub, " \t");
+				argEnd = strcspn(lineSub, " \t\"\'><");
 			if(argEnd == -1)
 				argEnd = lineLen;
 			
@@ -53,31 +101,49 @@ int main() {
 			strncpy(args[argCount], lineSub, argEnd);
 			argCount ++;
 			
-			lineSub += argEnd + 1;
-			while((int)(lineSub - line) < lineLen && strcspn(lineSub, " \t") == 0) {
+			lineSub += argEnd;
+			if(quote)
+				lineSub ++;
+			while((int)(lineSub - line) < lineLen && strcspn(lineSub, " \t\0") == 0) {
 				lineSub ++;
 			}
 		}
 
-		// we have the arguments now
-		// convert to format used by execvp
-		char * argStrings[MAX_ARGS] = { NULL }; // full of nulls
-		for(int i = 0; i < argCount; i ++) {
-			argStrings[i] = args[i];
-			//printf("%s\n", args[i]);
+		// multiple redirections
+		if(redir == REDIR_ERROR) {
+			printf("Error. This shell does not support more than one redirection per command.\n");
 		}
-
-		pid_t pid = fork();
-		if(pid == 0) {
-			return execvp(argStrings[0], argStrings);
+		// redirection symbol at end of line
+		else if(redir != REDIR_NONE && redirArgIndex >= argCount) {
+			printf("Error. Redirection file missing.\n");
 		}
 		else {
-			int status;
-            waitpid(pid, &status, 0);
-			// exit status
-            if(WIFEXITED(status) && WEXITSTATUS(status)) {
-                printf("Command failed. Error code %d\n", WEXITSTATUS(status));
-            }
+			char * redirFile = NULL;
+			if(redir != REDIR_NONE) {
+				argCount = redirArgIndex - 1;
+				redirFile = args[redirArgIndex];
+				printf("Redirect file: %s\n", redirFile);
+			}
+			// we have the arguments now
+			// convert to format used by execvp
+			char * argStrings[MAX_ARGS] = { NULL }; // full of nulls
+			for(int i = 0; i < argCount; i ++) {
+				argStrings[i] = args[i];
+				printf("%s\n", args[i]);
+			}
+
+			pid_t pid = fork();
+			if(pid == 0) {
+				return execvp(argStrings[0], argStrings);
+			}
+			else {
+				int status;
+				waitpid(pid, &status, 0);
+				// exit status
+				if(WIFEXITED(status) && WEXITSTATUS(status)) {
+					printf("Command failed. Error code %d\n", WEXITSTATUS(status));
+				}
+			}
 		}
 		
 	}
